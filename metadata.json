@@ -1,0 +1,6 @@
+{
+  "name": "Customer Packaging Label Generator",
+  "description": "Generate, preview, print, and download professional courier package stickers and shipping labels instantly.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
