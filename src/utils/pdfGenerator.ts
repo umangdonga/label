@@ -1,50 +1,363 @@
-import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { OrderFormData } from '../types';
 
 /**
- * Generates and downloads a high-resolution PDF file containing only the shipping label element.
+ * Sanitizes and generates the exact filename requested: CustomerName_ProductName_Label.pdf
+ */
+export function getPdfFilename(customerName?: string, productName?: string): string {
+  const cleanCustomer = (customerName || 'Customer')
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, '');
+
+  const cleanProduct = (productName || 'Product')
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, '');
+
+  const safeCustomer = cleanCustomer || 'Customer';
+  const safeProduct = cleanProduct || 'Product';
+
+  return `${safeCustomer}_${safeProduct}_Label.pdf`;
+}
+
+/**
+ * Formats date into DD/MM/YYYY
+ */
+function formatDate(dateStr?: string): string {
+  if (!dateStr) return '—';
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+  } catch {}
+  return dateStr;
+}
+
+/**
+ * Generates a clean, valid 4 x 6 inch portrait PDF directly with jsPDF
+ * and triggers an automatic browser download without opening any blank tabs.
  */
 export async function generateAndDownloadPdf(
-  labelElement: HTMLElement,
-  orderData: OrderFormData
+  arg1: HTMLElement | OrderFormData,
+  arg2?: OrderFormData | HTMLElement | null
 ): Promise<void> {
-  // Capture at 3x scale for crisp 300 DPI text printing on labels
-  const canvas = await html2canvas(labelElement, {
-    scale: 3,
-    useCORS: true,
-    logging: false,
-    backgroundColor: '#ffffff',
-    windowWidth: labelElement.scrollWidth,
-    windowHeight: labelElement.scrollHeight,
+  // Extract orderData from either argument position for compatibility
+  let orderData: OrderFormData;
+  if (arg1 && 'fullName' in (arg1 as OrderFormData)) {
+    orderData = arg1 as OrderFormData;
+  } else if (arg2 && 'fullName' in (arg2 as OrderFormData)) {
+    orderData = arg2 as OrderFormData;
+  } else {
+    throw new Error('Order data is missing');
+  }
+
+  // 4 x 6 inch portrait (72 pt per inch => 4 * 72 = 288 pt width, 6 * 72 = 432 pt height)
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'pt',
+    format: [288, 432],
   });
 
-  const imgData = canvas.toDataURL('image/png');
+  const pageW = 288;
+  const pageH = 432;
+  const margin = 12;
 
-  // Standard 4 x 6 inch label is ~101.6 mm x 152.4 mm
-  // We calculate proportional height based on actual element aspect ratio
-  const labelWidthMm = 100;
-  const labelHeightMm = (canvas.height * labelWidthMm) / canvas.width;
+  const boxX = margin;
+  const boxY = margin;
+  const boxW = pageW - margin * 2; // 264 pt
+  const boxH = pageH - margin * 2; // 408 pt
 
-  // Add 4mm border padding around the page for peel & stick / thermal printer margins
-  const pdfWidth = labelWidthMm + 8;
-  const pdfHeight = labelHeightMm + 8;
+  // 1. OUTER BORDER (2pt solid black)
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(2);
+  doc.rect(boxX, boxY, boxW, boxH);
 
-  const pdf = new jsPDF({
-    orientation: pdfHeight >= pdfWidth ? 'portrait' : 'landscape',
-    unit: 'mm',
-    format: [pdfWidth, pdfHeight],
+  // 2. HEADER: BUSINESS NAME & LOGO
+  const headerHeight = 52;
+  const headerBottomY = boxY + headerHeight;
+
+  // Header bottom border
+  doc.setLineWidth(1.5);
+  doc.line(boxX, headerBottomY, boxX + boxW, headerBottomY);
+
+  // Business Name
+  const bizName = (orderData.businessName || 'YOUR BUSINESS NAME').toUpperCase();
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(0, 0, 0);
+
+  // Limit business name width so it doesn't overlap logo
+  const bizLines = doc.splitTextToSize(bizName, boxW - 85);
+  doc.text(bizLines, boxX + 8, boxY + 20);
+
+  // Subtitle
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(70, 70, 70);
+  doc.text('PACKAGING & DELIVERY STICKER', boxX + 8, boxY + 38);
+  doc.setTextColor(0, 0, 0);
+
+  // Business Logo on the right
+  if (orderData.businessLogo && orderData.businessLogo.startsWith('data:image')) {
+    try {
+      const format = orderData.businessLogo.includes('image/png') ? 'PNG' : 'JPEG';
+      doc.addImage(
+        orderData.businessLogo,
+        format,
+        boxX + boxW - 74,
+        boxY + 7,
+        66,
+        38,
+        undefined,
+        'FAST'
+      );
+    } catch {
+      // Fallback clean logo box if format conversion is unsupported
+      doc.setLineWidth(1);
+      doc.setDrawColor(180, 180, 180);
+      doc.rect(boxX + boxW - 65, boxY + 12, 56, 28);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(120, 120, 120);
+      doc.text('LOGO', boxX + boxW - 37, boxY + 29, { align: 'center' });
+      doc.setTextColor(0, 0, 0);
+      doc.setDrawColor(0, 0, 0);
+    }
+  } else {
+    doc.setLineWidth(1);
+    doc.setDrawColor(180, 180, 180);
+    doc.rect(boxX + boxW - 65, boxY + 12, 56, 28);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    doc.text('LOGO', boxX + boxW - 37, boxY + 29, { align: 'center' });
+    doc.setTextColor(0, 0, 0);
+    doc.setDrawColor(0, 0, 0);
+  }
+
+  // 3. SECTION: SHIP TO & IMMEDIATE ADDRESS
+  const shipToStartY = headerBottomY;
+  const shipToBottomY = boxY + 185;
+
+  // Header row inside SHIP TO
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.text('SHIP TO:', boxX + 8, shipToStartY + 14);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(100, 100, 100);
+  doc.text('RECIPIENT', boxX + boxW - 8, shipToStartY + 14, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+
+  // Thin hairline separator
+  doc.setLineWidth(0.5);
+  doc.setDrawColor(0, 0, 0);
+  doc.line(boxX + 8, shipToStartY + 18, boxX + boxW - 8, shipToStartY + 18);
+
+  // Customer Full Name
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12.5);
+  const nameLines = doc.splitTextToSize(orderData.fullName || '—', boxW - 16);
+  doc.text(nameLines, boxX + 8, shipToStartY + 33);
+
+  // Mobile
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.text(`Mobile: ${orderData.mobileNumber || '—'}`, boxX + 8, shipToStartY + 47);
+
+  // Dotted address line
+  doc.setDrawColor(180, 180, 180);
+  doc.setLineWidth(0.5);
+  doc.line(boxX + 8, shipToStartY + 54, boxX + boxW - 8, shipToStartY + 54);
+  doc.setDrawColor(0, 0, 0);
+
+  // Address lines (House, Society, Area, City/State/Pin)
+  let addrY = shipToStartY + 66;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+
+  const addressLines: string[] = [];
+  if (orderData.houseFlatNo) addressLines.push(orderData.houseFlatNo);
+  if (orderData.societyStreet) addressLines.push(orderData.societyStreet);
+  if (orderData.areaLocality) addressLines.push(orderData.areaLocality);
+
+  addressLines.forEach((line) => {
+    const splitLines = doc.splitTextToSize(line, boxW - 16);
+    doc.text(splitLines, boxX + 8, addrY);
+    addrY += splitLines.length * 11;
   });
 
-  pdf.addImage(imgData, 'PNG', 4, 4, labelWidthMm, labelHeightMm, undefined, 'FAST');
+  // City, State - Pincode
+  const cityStatePin = [
+    [orderData.city, orderData.state].filter(Boolean).join(', '),
+    orderData.pincode,
+  ]
+    .filter(Boolean)
+    .join(' - ');
 
-  // Clean filename: e.g. shipping-label-John-Doe-2026-10-04.pdf
-  const sanitizedName = (orderData.fullName || 'customer')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-  const dateStr = orderData.courierDispatchedDate || new Date().toISOString().split('T')[0];
-  const filename = `shipping-label-${sanitizedName}-${dateStr}.pdf`;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.text(cityStatePin || '—', boxX + 8, Math.max(addrY + 3, shipToStartY + 118));
 
-  pdf.save(filename);
+  // SHIP TO section bottom divider line
+  doc.setLineWidth(1.5);
+  doc.line(boxX, shipToBottomY, boxX + boxW, shipToBottomY);
+
+  // 4. SECTION: ORDER ITEMS & DETAILS TABLE
+  const tableStartY = shipToBottomY;
+
+  // Title bar
+  doc.setFillColor(242, 242, 242);
+  doc.rect(boxX, tableStartY, boxW, 14, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.text('ORDER ITEMS & DETAILS', boxX + 8, tableStartY + 10);
+
+  doc.setLineWidth(1);
+  doc.line(boxX, tableStartY + 14, boxX + boxW, tableStartY + 14);
+
+  // Table Column Headers
+  const colHeaderY = tableStartY + 14;
+  const colHeaderH = 14;
+  doc.setFillColor(255, 255, 255);
+  doc.rect(boxX, colHeaderY, boxW, colHeaderH, 'F');
+  doc.line(boxX, colHeaderY + colHeaderH, boxX + boxW, colHeaderY + colHeaderH);
+
+  // Column X positions
+  const colQtyX = boxX + 130;
+  const colPriceX = boxX + 175;
+  const colTotalX = boxX + 215;
+
+  // Vertical column dividers
+  doc.line(colQtyX, colHeaderY, colQtyX, colHeaderY + colHeaderH);
+  doc.line(colPriceX, colHeaderY, colPriceX, colHeaderY + colHeaderH);
+  doc.line(colTotalX, colHeaderY, colTotalX, colHeaderY + colHeaderH);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.text('PRODUCT NAME', boxX + 6, colHeaderY + 10);
+  doc.text('QTY', colQtyX + 22.5, colHeaderY + 10, { align: 'center' });
+  doc.text('PRICE', colTotalX - 4, colHeaderY + 10, { align: 'right' });
+  doc.text('TOTAL', boxX + boxW - 6, colHeaderY + 10, { align: 'right' });
+
+  // Data Row
+  const rowY = colHeaderY + colHeaderH;
+  const rowH = 46;
+
+  doc.line(boxX, rowY + rowH, boxX + boxW, rowY + rowH);
+  doc.line(colQtyX, rowY, colQtyX, rowY + rowH);
+  doc.line(colPriceX, rowY, colPriceX, rowY + rowH);
+  doc.line(colTotalX, rowY, colTotalX, rowY + rowH);
+
+  // Product Name
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  const prodLines = doc.splitTextToSize(orderData.productName || '—', colQtyX - boxX - 10);
+  doc.text(prodLines, boxX + 6, rowY + 13);
+
+  // Quantity
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.text(String(orderData.quantity || '1'), colQtyX + 22.5, rowY + 16, { align: 'center' });
+
+  // Unit Price & Total Calculation
+  const unitPriceNum = Number(orderData.unitPrice) || 0;
+  const qtyNum = Number(orderData.quantity) || 1;
+  const totalPriceNum = unitPriceNum * qtyNum;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.text(
+    unitPriceNum > 0 ? `Rs. ${unitPriceNum.toLocaleString('en-IN')}` : '—',
+    colTotalX - 4,
+    rowY + 16,
+    { align: 'right' }
+  );
+
+  doc.setFont('helvetica', 'bold');
+  doc.text(
+    unitPriceNum > 0 ? `Rs. ${totalPriceNum.toLocaleString('en-IN')}` : '—',
+    boxX + boxW - 6,
+    rowY + 16,
+    { align: 'right' }
+  );
+
+  // Total Amount Row (if unit price entered)
+  const totalRowY = rowY + rowH;
+  const totalRowH = 16;
+  let tableBottomY = totalRowY;
+
+  if (unitPriceNum > 0) {
+    doc.setFillColor(248, 248, 248);
+    doc.rect(boxX, totalRowY, boxW, totalRowH, 'F');
+    doc.line(boxX, totalRowY + totalRowH, boxX + boxW, totalRowY + totalRowH);
+    doc.line(colTotalX, totalRowY, colTotalX, totalRowY + totalRowH);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('TOTAL AMOUNT:', colTotalX - 6, totalRowY + 11, { align: 'right' });
+    doc.setFontSize(8.5);
+    doc.text(`Rs. ${totalPriceNum.toLocaleString('en-IN')}`, boxX + boxW - 6, totalRowY + 11, {
+      align: 'right',
+    });
+    tableBottomY = totalRowY + totalRowH;
+  }
+
+  // 5. SECTION: PAYMENT & COURIER DISPATCHED DATE
+  const paymentStartY = tableBottomY;
+  const midX = boxX + boxW / 2;
+
+  // Vertical divider between Payment and Dispatched
+  doc.setLineWidth(1.5);
+  doc.line(midX, paymentStartY, midX, boxY + boxH);
+
+  // Left: Payment
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.text('PAYMENT:', boxX + 8, paymentStartY + 14);
+
+  const isCod = orderData.payment === 'COD';
+  if (isCod) {
+    doc.setFillColor(0, 0, 0);
+    doc.rect(boxX + 8, paymentStartY + 20, boxW / 2 - 16, 22, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.text('COD (COLLECT CASH)', boxX + boxW / 4, paymentStartY + 34, { align: 'center' });
+    doc.setTextColor(0, 0, 0);
+  } else {
+    doc.setLineWidth(1.5);
+    doc.setDrawColor(0, 0, 0);
+    doc.rect(boxX + 8, paymentStartY + 20, boxW / 2 - 16, 22);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.text('PAID (PREPAID)', boxX + boxW / 4, paymentStartY + 34, { align: 'center' });
+  }
+
+  // Right: Courier Dispatched
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.text('COURIER DISPATCHED:', midX + 8, paymentStartY + 14);
+
+  doc.setFontSize(10);
+  doc.text(formatDate(orderData.courierDispatchedDate), midX + 8, paymentStartY + 33);
+
+  // 6. GENERATE & TRIGGER IMMEDIATE DIRECT DOWNLOAD
+  const filename = getPdfFilename(orderData.fullName, orderData.productName);
+
+  // Convert to Blob and download via anchor click (ensures no blank tab and 100% reliable save)
+  const blob = doc.output('blob');
+  const blobUrl = URL.createObjectURL(blob);
+  const downloadLink = document.createElement('a');
+  downloadLink.href = blobUrl;
+  downloadLink.download = filename;
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+
+  // Clean up object URL after download
+  setTimeout(() => {
+    URL.revokeObjectURL(blobUrl);
+  }, 2000);
 }

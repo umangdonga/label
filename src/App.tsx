@@ -303,18 +303,13 @@ export default function App() {
       }
     }
 
-    if (!labelRef.current) {
-      showToast('Label preview is not ready. Please try again.');
-      return;
-    }
-
     try {
       setIsGeneratingPdf(true);
-      await generateAndDownloadPdf(labelRef.current, currentLabel);
+      await generateAndDownloadPdf(currentLabel);
       showToast('PDF downloaded successfully!');
     } catch (err) {
       console.error('Failed to generate PDF:', err);
-      showToast('Failed to download PDF. Please try the Print option.');
+      showToast('Failed to download PDF. Please check order details.');
     } finally {
       setIsGeneratingPdf(false);
     }
