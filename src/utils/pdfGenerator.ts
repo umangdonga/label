@@ -34,20 +34,47 @@ function formatDate(dateStr?: string): string {
 }
 
 /**
+ * Safely loads an image source into an HTMLImageElement with a timeout
+ * to prevent hanging and ensure broad image format compatibility (PNG, JPG, WebP, SVG).
+ */
+function loadLogoElement(src: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    if (!src) {
+      resolve(null);
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const timer = setTimeout(() => {
+      resolve(null);
+    }, 1200);
+
+    img.onload = () => {
+      clearTimeout(timer);
+      resolve(img);
+    };
+    img.onerror = () => {
+      clearTimeout(timer);
+      resolve(null);
+    };
+    img.src = src;
+  });
+}
+
+export interface GeneratedPdfResult {
+  filename: string;
+  blobUrl: string;
+  pdfDoc: jsPDF;
+}
+
+/**
  * Generates a clean, valid 4 x 6 inch portrait PDF directly with jsPDF
- * and triggers an automatic browser download without opening any blank tabs.
+ * and triggers an automatic browser download using multiple cross-browser fallback methods.
  */
 export async function generateAndDownloadPdf(
-  arg1: HTMLElement | OrderFormData,
-  arg2?: OrderFormData | HTMLElement | null
-): Promise<void> {
-  // Extract orderData from either argument position for compatibility
-  let orderData: OrderFormData;
-  if (arg1 && 'fullName' in (arg1 as OrderFormData)) {
-    orderData = arg1 as OrderFormData;
-  } else if (arg2 && 'fullName' in (arg2 as OrderFormData)) {
-    orderData = arg2 as OrderFormData;
-  } else {
+  orderData: OrderFormData
+): Promise<GeneratedPdfResult> {
+  if (!orderData) {
     throw new Error('Order data is missing');
   }
 
@@ -98,21 +125,36 @@ export async function generateAndDownloadPdf(
   doc.setTextColor(0, 0, 0);
 
   // Business Logo on the right
-  if (orderData.businessLogo && orderData.businessLogo.startsWith('data:image')) {
+  if (orderData.businessLogo) {
     try {
-      const format = orderData.businessLogo.includes('image/png') ? 'PNG' : 'JPEG';
-      doc.addImage(
-        orderData.businessLogo,
-        format,
-        boxX + boxW - 74,
-        boxY + 7,
-        66,
-        38,
-        undefined,
-        'FAST'
-      );
+      const imgElem = await loadLogoElement(orderData.businessLogo);
+      if (imgElem && imgElem.naturalWidth > 0 && imgElem.naturalHeight > 0) {
+        // Draw onto a temporary canvas to get a safe, guaranteed PNG
+        const canvas = document.createElement('canvas');
+        canvas.width = imgElem.naturalWidth;
+        canvas.height = imgElem.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(imgElem, 0, 0);
+          const safePngData = canvas.toDataURL('image/png');
+          doc.addImage(
+            safePngData,
+            'PNG',
+            boxX + boxW - 74,
+            boxY + 7,
+            66,
+            38,
+            undefined,
+            'FAST'
+          );
+        } else {
+          throw new Error('Canvas context not available');
+        }
+      } else {
+        throw new Error('Image could not be loaded');
+      }
     } catch {
-      // Fallback clean logo box if format conversion is unsupported
+      // Fallback clean logo box if format conversion fails
       doc.setLineWidth(1);
       doc.setDrawColor(180, 180, 180);
       doc.rect(boxX + boxW - 65, boxY + 12, 56, 28);
@@ -343,21 +385,36 @@ export async function generateAndDownloadPdf(
   doc.setFontSize(10);
   doc.text(formatDate(orderData.courierDispatchedDate), midX + 8, paymentStartY + 33);
 
-  // 6. GENERATE & TRIGGER IMMEDIATE DIRECT DOWNLOAD
+  // 6. GENERATE & TRIGGER DOWNLOAD
   const filename = getPdfFilename(orderData.fullName, orderData.productName);
 
-  // Convert to Blob and download via anchor click (ensures no blank tab and 100% reliable save)
+  // Create Blob and Blob URL
   const blob = doc.output('blob');
   const blobUrl = URL.createObjectURL(blob);
-  const downloadLink = document.createElement('a');
-  downloadLink.href = blobUrl;
-  downloadLink.download = filename;
-  document.body.appendChild(downloadLink);
-  downloadLink.click();
-  document.body.removeChild(downloadLink);
 
-  // Clean up object URL after download
-  setTimeout(() => {
-    URL.revokeObjectURL(blobUrl);
-  }, 2000);
+  // Attempt automatic download
+  try {
+    const downloadLink = document.createElement('a');
+    downloadLink.href = blobUrl;
+    downloadLink.download = filename;
+    downloadLink.setAttribute('download', filename);
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    setTimeout(() => {
+      document.body.removeChild(downloadLink);
+    }, 100);
+  } catch (downloadErr) {
+    console.warn('Anchor download fallback:', downloadErr);
+    try {
+      doc.save(filename);
+    } catch (saveErr) {
+      console.warn('doc.save fallback:', saveErr);
+    }
+  }
+
+  return {
+    filename,
+    blobUrl,
+    pdfDoc: doc,
+  };
 }
